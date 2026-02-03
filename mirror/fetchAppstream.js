@@ -7,6 +7,28 @@ const gzPath = path.join("/tmp", "appstream.xml.gz");
 const xmlPath = path.join("/tmp", "appstream.xml");
 
 export default async (url) => {
+  // Check if cached XML file already exists
+  if (fs.existsSync(xmlPath)) {
+    console.log("Using cached XML file");
+    return new Promise((resolve, reject) => {
+      fs.readFile(xmlPath, "utf8", (err, data) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        parseString(data, (parseErr, result) => {
+          if (parseErr) {
+            reject(parseErr);
+            return;
+          }
+          resolve(result);
+        });
+      });
+    });
+  }
+  console.log("Downloading XML file");
+
+  // If not cached, download and process
   const response = await fetch(url);
   if (!response.ok) {
     throw new Error(`Failed to fetch: ${response.status}`);
