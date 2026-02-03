@@ -1,0 +1,19 @@
+{
+  "name": "usrpkg-builder",
+  "version": "1.0.0",
+  "description": "Manage usrpkg flatpak repo for splashos",
+  "license": "ISC",
+  "author": "",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "dotenv": "^16.0.0",
+    "xml2js": "^0.6.2",
+    "libflatpak": "^1.0.0",
+    "js-yaml": "^4.1.0",
+    "node-fetch": "^3.3.2"
+  }
+}

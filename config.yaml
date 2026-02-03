@@ -1,0 +1,6 @@
+repo_path: ./usrpkg-repo
+appstream_url: https://dl.flathub.org/repo/appstream/x86_64/appstream.xml.gz
+architecture: x86_64
+remote_name: flathub
+remote_url: https://dl.flathub.org/repo/
+max_packages: 1 # 0 means download all packages, set to positive number to limit
