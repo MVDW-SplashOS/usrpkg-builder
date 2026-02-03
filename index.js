@@ -2,7 +2,7 @@ import config from "./utils/config.js";
 import {
   initRepo,
   createSummary,
-  updateAppstream,
+  generateAppstream,
 } from "./ostree/ostreeManager.js";
 import fetchAppstream from "./mirror/fetchAppstream.js";
 import { fetchPackage } from "./mirror/fetchPackage.js";
@@ -17,6 +17,9 @@ console.log("Flatpak repo management tool\n");
 
 // Initialize the repository
 await initRepo();
+
+// Track all components we successfully mirror
+const mirroredComponents = [];
 
 // Process each remote
 for (const remote of config.repo_remotes) {
@@ -45,6 +48,7 @@ for (const remote of config.repo_remotes) {
 
       const runtime = bundle?.runtime;
       const sdk = bundle?.sdk;
+      let appFetched = false;
 
       // Fetch the application itself
       if (bundle.type === "flatpak") {
@@ -53,6 +57,7 @@ for (const remote of config.repo_remotes) {
         try {
           await fetchPackage(remote.name, appRef);
           console.log(`  ✓ App fetched successfully`);
+          appFetched = true;
         } catch (error) {
           console.error(`  ✗ Failed to fetch app: ${error.message}`);
         }
@@ -69,7 +74,9 @@ for (const remote of config.repo_remotes) {
         }
       }
 
-      // Fetch SDK if specified
+      // Fetch SDK if specified (optional, usually not needed for end users)
+      // Uncomment if you want to mirror SDKs too
+      /*
       if (sdk) {
         console.log(`  → Fetching SDK: ${sdk}`);
         try {
@@ -79,6 +86,12 @@ for (const remote of config.repo_remotes) {
           console.error(`  ✗ Failed to fetch SDK: ${error.message}`);
         }
       }
+      */
+
+      // If app was successfully fetched, add to mirrored components
+      if (appFetched) {
+        mirroredComponents.push(component);
+      }
     } catch (error) {
       console.error(`  ✗ Error processing ${appId}: ${error.message}`);
     }
@@ -87,12 +100,23 @@ for (const remote of config.repo_remotes) {
   console.log(`\nCompleted mirroring from ${remote.name}`);
 }
 
+// Generate appstream metadata for mirrored apps
+if (mirroredComponents.length > 0) {
+  console.log(
+    `\nGenerating appstream metadata for ${mirroredComponents.length} apps...`,
+  );
+  await generateAppstream(mirroredComponents);
+}
+
 // Update the repository summary after all packages are fetched
 console.log("\nUpdating repository metadata...");
 await createSummary();
 
 console.log("\n✓ Repository update complete!");
 console.log(`Repository location: ${config.repo_name}`);
+console.log(`Mirrored ${mirroredComponents.length} applications`);
 console.log(
-  `You can now serve this repository via HTTP and add it to Flatpak clients.`,
+  `\nYou can now serve this repository via HTTP and add it to Flatpak clients.`,
 );
+console.log(`\nTo test search locally, run:`);
+console.log(`  flatpak remote-ls --app <remote-name>`);

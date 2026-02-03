@@ -2,6 +2,7 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import fs from "fs/promises";
 import path from "path";
+import { Builder } from "xml2js";
 
 import config from "../utils/config.js";
 
@@ -95,6 +96,40 @@ async function ensureFlatpakStructure() {
   }
 }
 
+export async function generateAppstream(components) {
+  const repoPath = config.repo_name;
+  const appstreamPath = path.join(
+    repoPath,
+    "appstream",
+    "x86_64",
+    "appstream.xml",
+  );
+
+  // Build XML from components
+  const appstreamData = {
+    components: {
+      $: { version: "0.14" },
+      component: components,
+    },
+  };
+
+  const builder = new Builder({
+    xmldec: { version: "1.0", encoding: "UTF-8" },
+  });
+  const xml = builder.buildObject(appstreamData);
+
+  // Write uncompressed XML
+  await fs.writeFile(appstreamPath, xml);
+  console.log(`✓ Generated appstream.xml with ${components.length} components`);
+
+  // Compress it
+  const zlib = await import("zlib");
+  const content = await fs.readFile(appstreamPath);
+  const compressed = zlib.gzipSync(content);
+  await fs.writeFile(appstreamPath + ".gz", compressed);
+  console.log(`✓ Compressed to appstream.xml.gz`);
+}
+
 export async function createSummary() {
   const repoPath = config.repo_name;
 
@@ -113,7 +148,26 @@ export async function createSummary() {
     console.log("⚠ No packages pulled yet, creating empty summary");
   }
 
-  // First, update the summary file
+  // First, update the summary file using flatpak build-update-repo
+  // This is the proper way to update a Flatpak repository
+  const buildUpdateCommand = `flatpak build-update-repo ${repoPath}`;
+  try {
+    const { stdout, stderr } = await execAsync(buildUpdateCommand);
+    if (stderr && !stderr.includes("warning")) {
+      console.warn(`build-update-repo stderr: ${stderr}`);
+    }
+    console.log(`✓ Updated Flatpak repository (flatpak build-update-repo)`);
+  } catch (error) {
+    // If flatpak build-update-repo fails, fall back to ostree summary
+    console.warn(`⚠ flatpak build-update-repo failed, using ostree summary`);
+    await fallbackOstreeSummary();
+  }
+}
+
+async function fallbackOstreeSummary() {
+  const repoPath = config.repo_name;
+
+  // Use basic ostree summary update
   const summaryCommand = `ostree summary -u --repo=${repoPath}`;
   try {
     const { stdout, stderr } = await execAsync(summaryCommand);
@@ -125,57 +179,11 @@ export async function createSummary() {
     throw new Error(`Failed to create summary: ${error.message}`);
   }
 
-  // Add Flatpak-specific metadata to the summary
+  // Add Flatpak-specific metadata manually
   await addFlatpakMetadata();
 }
 
 async function addFlatpakMetadata() {
-  const repoPath = config.repo_name;
-
-  // Create a minimal appstream metadata file if it doesn't exist
-  const appstreamPath = path.join(
-    repoPath,
-    "appstream",
-    "x86_64",
-    "appstream.xml.gz",
-  );
-
-  try {
-    await fs.access(appstreamPath);
-  } catch (error) {
-    console.log("Creating placeholder appstream metadata...");
-    await createPlaceholderAppstream(appstreamPath);
-  }
-
-  // Try to use flatpak build-update-repo first
-  const updateCommand = `flatpak build-update-repo --no-update-appstream ${repoPath}`;
-  try {
-    const { stdout, stderr } = await execAsync(updateCommand);
-    if (stderr && !stderr.includes("warning")) {
-      console.warn(`build-update-repo stderr: ${stderr}`);
-    }
-    console.log(`✓ Updated Flatpak repository metadata`);
-  } catch (error) {
-    // If flatpak build-update-repo fails, try adding xa.title to summary manually
-    console.warn(
-      `⚠ flatpak build-update-repo not available, using fallback method`,
-    );
-    await addSummaryMetadataManually();
-  }
-}
-
-async function createPlaceholderAppstream(appstreamPath) {
-  const zlib = await import("zlib");
-  const xmlContent = `<?xml version="1.0" encoding="UTF-8"?>
-<components version="0.14">
-  <!-- Mirrored Flatpak applications will appear here -->
-</components>`;
-
-  const compressed = zlib.gzipSync(Buffer.from(xmlContent));
-  await fs.writeFile(appstreamPath, compressed);
-}
-
-async function addSummaryMetadataManually() {
   const repoPath = config.repo_name;
 
   // Add xa.title metadata to the summary using ostree
@@ -197,25 +205,4 @@ async function addSummaryMetadataManually() {
   } catch (error) {
     console.warn(`Could not add comment metadata: ${error.message}`);
   }
-}
-
-export async function updateAppstream(appstreamData) {
-  const repoPath = config.repo_name;
-  const appstreamPath = path.join(
-    repoPath,
-    "appstream",
-    "x86_64",
-    "appstream.xml",
-  );
-
-  // Write the appstream data (assuming it's XML string)
-  await fs.writeFile(appstreamPath, appstreamData);
-
-  // Compress it
-  const zlib = await import("zlib");
-  const content = await fs.readFile(appstreamPath);
-  const compressed = zlib.gzipSync(content);
-  await fs.writeFile(appstreamPath + ".gz", compressed);
-
-  console.log("✓ Updated appstream metadata");
 }
