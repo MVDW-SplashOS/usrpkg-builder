@@ -6,7 +6,7 @@ import { parseString } from "xml2js";
 const gzPath = path.join("/tmp", "appstream.xml.gz");
 const xmlPath = path.join("/tmp", "appstream.xml");
 
-export default async (url) => {
+const fetchAppstream = async (url) => {
   // Check if cached XML file already exists
   if (fs.existsSync(xmlPath)) {
     console.log("Using cached XML file");
@@ -65,3 +65,7 @@ export default async (url) => {
     writeStream.on("error", reject);
   });
 };
+
+// Export both as default and named export for compatibility
+export default fetchAppstream;
+export { fetchAppstream };

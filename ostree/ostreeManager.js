@@ -17,10 +17,8 @@ export async function initRepo() {
 
   try {
     await fs.access(objectsPath);
-    // Objects directory exists, repo is likely initialized
     console.log(`Repository already initialized: ${repoPath}`);
   } catch (error) {
-    // Objects directory doesn't exist, need to initialize
     needsInit = true;
   }
 
@@ -54,9 +52,7 @@ export async function initRepo() {
           remoteExists = true;
           console.log(`Remote already exists: ${remote.name}`);
         }
-      } catch (error) {
-        // Remote list failed, continue to add
-      }
+      } catch (error) {}
 
       if (!remoteExists) {
         const addRemoteCommand = `ostree remote add --repo=${repoPath} --no-gpg-verify ${remote.name} ${remote.url}`;
@@ -83,11 +79,13 @@ async function ensureFlatpakStructure() {
   const appstreamDir = path.join(repoPath, "appstream");
   const x86_64Dir = path.join(appstreamDir, "x86_64");
   const iconsDir = path.join(x86_64Dir, "icons");
+  const activeDir = path.join(x86_64Dir, "active");
 
   try {
     await fs.mkdir(appstreamDir, { recursive: true });
     await fs.mkdir(x86_64Dir, { recursive: true });
     await fs.mkdir(iconsDir, { recursive: true });
+    await fs.mkdir(activeDir, { recursive: true });
     console.log("✓ Created Flatpak directory structure");
   } catch (error) {
     console.warn(
@@ -98,12 +96,10 @@ async function ensureFlatpakStructure() {
 
 export async function generateAppstream(components) {
   const repoPath = config.repo_name;
-  const appstreamPath = path.join(
-    repoPath,
-    "appstream",
-    "x86_64",
-    "appstream.xml",
-  );
+
+  // Create appstream directory in active location (required for flatpak build-update-repo)
+  const activeDir = path.join(repoPath, "appstream", "x86_64", "active");
+  const appstreamPath = path.join(activeDir, "appstream.xml");
 
   // Build XML from components
   const appstreamData = {
@@ -118,7 +114,7 @@ export async function generateAppstream(components) {
   });
   const xml = builder.buildObject(appstreamData);
 
-  // Write uncompressed XML
+  // Write XML to active directory
   await fs.writeFile(appstreamPath, xml);
   console.log(`✓ Generated appstream.xml with ${components.length} components`);
 
@@ -128,81 +124,132 @@ export async function generateAppstream(components) {
   const compressed = zlib.gzipSync(content);
   await fs.writeFile(appstreamPath + ".gz", compressed);
   console.log(`✓ Compressed to appstream.xml.gz`);
+
+  // Also copy to the standard location for backward compatibility
+  const standardDir = path.join(repoPath, "appstream", "x86_64");
+  try {
+    await fs.copyFile(appstreamPath, path.join(standardDir, "appstream.xml"));
+    await fs.copyFile(
+      appstreamPath + ".gz",
+      path.join(standardDir, "appstream.xml.gz"),
+    );
+  } catch (error) {
+    console.warn(
+      `Warning: Could not copy to standard location: ${error.message}`,
+    );
+  }
 }
 
 export async function createSummary() {
   const repoPath = config.repo_name;
 
-  // Check if there are any refs in the repository
-  const refsDir = path.join(repoPath, "refs");
-  let hasRefs = false;
+  console.log("Updating repository metadata...");
 
-  try {
-    const entries = await fs.readdir(refsDir, { recursive: true });
-    hasRefs = entries.length > 0;
-  } catch (error) {
-    console.warn("No refs directory found");
-  }
-
-  if (!hasRefs) {
-    console.log("⚠ No packages pulled yet, creating empty summary");
-  }
-
-  // First, update the summary file using flatpak build-update-repo
-  // This is the proper way to update a Flatpak repository
+  // Use flatpak build-update-repo which handles everything properly
+  // Including committing appstream data to OSTree refs
   const buildUpdateCommand = `flatpak build-update-repo ${repoPath}`;
+
   try {
     const { stdout, stderr } = await execAsync(buildUpdateCommand);
+
+    // Show relevant output
+    if (stdout) {
+      const lines = stdout.trim().split("\n");
+      // Show important messages
+      lines.forEach((line) => {
+        if (
+          line.includes("Updating") ||
+          line.includes("commit") ||
+          line.includes("appstream")
+        ) {
+          console.log(`  ${line}`);
+        }
+      });
+    }
+
     if (stderr && !stderr.includes("warning")) {
       console.warn(`build-update-repo stderr: ${stderr}`);
     }
-    console.log(`✓ Updated Flatpak repository (flatpak build-update-repo)`);
+
+    console.log(`✓ Updated Flatpak repository successfully`);
+    console.log(`  - OSTree summary updated`);
+    console.log(
+      `  - Appstream refs committed (appstream/x86_64, appstream2/x86_64)`,
+    );
+    console.log(`  - Repository metadata updated`);
   } catch (error) {
-    // If flatpak build-update-repo fails, fall back to ostree summary
-    console.warn(`⚠ flatpak build-update-repo failed, using ostree summary`);
-    await fallbackOstreeSummary();
+    console.error(`✗ flatpak build-update-repo failed: ${error.message}`);
+    console.log(`\nTrying manual approach...`);
+    await manualUpdate();
   }
 }
 
-async function fallbackOstreeSummary() {
+async function manualUpdate() {
   const repoPath = config.repo_name;
 
-  // Use basic ostree summary update
-  const summaryCommand = `ostree summary -u --repo=${repoPath}`;
+  // Step 1: Commit appstream data manually
+  console.log("Step 1: Committing appstream data to OSTree...");
+  const activeDir = path.join(repoPath, "appstream", "x86_64", "active");
+
   try {
-    const { stdout, stderr } = await execAsync(summaryCommand);
-    if (stderr && !stderr.includes("warning")) {
-      console.warn(`Summary stderr: ${stderr}`);
+    // Check if active directory has content
+    const files = await fs.readdir(activeDir);
+    if (files.length === 0) {
+      console.warn("  ⚠ No appstream files to commit");
+    } else {
+      // Commit to both refs that Flatpak might look for
+      const refs = ["appstream/x86_64", "appstream2/x86_64"];
+
+      for (const ref of refs) {
+        const commitCmd = `ostree commit --repo=${repoPath} --branch=${ref} --subject="Update appstream" ${activeDir}`;
+        try {
+          await execAsync(commitCmd);
+          console.log(`  ✓ Appstream committed to ref: ${ref}`);
+        } catch (error) {
+          console.warn(`  ⚠ Could not commit to ${ref}: ${error.message}`);
+        }
+      }
     }
-    console.log(`✓ Updated OSTree summary`);
   } catch (error) {
-    throw new Error(`Failed to create summary: ${error.message}`);
+    console.warn(`  ⚠ Could not commit appstream: ${error.message}`);
   }
 
-  // Add Flatpak-specific metadata manually
+  // Step 2: Update OSTree summary
+  console.log("Step 2: Updating OSTree summary...");
+  try {
+    await execAsync(`ostree summary -u --repo=${repoPath}`);
+    console.log("  ✓ OSTree summary updated");
+  } catch (error) {
+    throw new Error(`Failed to update summary: ${error.message}`);
+  }
+
+  // Step 3: Add Flatpak metadata
+  console.log("Step 3: Adding Flatpak metadata...");
   await addFlatpakMetadata();
+
+  console.log("✓ Manual update complete");
 }
 
 async function addFlatpakMetadata() {
   const repoPath = config.repo_name;
 
-  // Add xa.title metadata to the summary using ostree
-  const titleCommand = `ostree summary --repo=${repoPath} --add-metadata xa.title=s:'${config.repo_name}'`;
+  const metadata = [
+    { key: "xa.title", value: config.repo_name },
+    { key: "xa.comment", value: "Mirrored Flatpak Repository" },
+    {
+      key: "xa.homepage",
+      value: "http://192.168.3.140/usrpkg-builder/usrpkg-repo/",
+    },
+  ];
 
-  try {
-    await execAsync(titleCommand);
-    console.log("✓ Added repository title metadata");
-  } catch (error) {
-    console.warn(`Could not add title metadata: ${error.message}`);
-  }
-
-  // Add xa.comment metadata
-  const commentCommand = `ostree summary --repo=${repoPath} --add-metadata xa.comment=s:'Mirrored Flatpak Repository'`;
-
-  try {
-    await execAsync(commentCommand);
-    console.log("✓ Added repository comment metadata");
-  } catch (error) {
-    console.warn(`Could not add comment metadata: ${error.message}`);
+  for (const { key, value } of metadata) {
+    try {
+      await execAsync(
+        `ostree summary --repo=${repoPath} --add-metadata ${key}=s:'${value}'`,
+      );
+      console.log(`  ✓ Added ${key}`);
+    } catch (error) {
+      console.warn(`  ⚠ Could not add ${key}: ${error.message}`);
+    }
   }
 }

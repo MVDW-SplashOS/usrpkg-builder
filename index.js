@@ -30,6 +30,7 @@ for (const remote of config.repo_remotes) {
   const appstream_data = await fetchAppstream(appstream_url);
 
   // Fetch packages for each component (limiting to first 3 for testing)
+  // To mirror more apps, change .slice(0, 3) to .slice(0, 10) or remove it entirely
   const components = appstream_data.components.component.slice(0, 3);
 
   for (let i = 0; i < components.length; i++) {
@@ -106,6 +107,10 @@ if (mirroredComponents.length > 0) {
     `\nGenerating appstream metadata for ${mirroredComponents.length} apps...`,
   );
   await generateAppstream(mirroredComponents);
+} else {
+  console.log(
+    `\n⚠ No apps were successfully mirrored, skipping appstream generation`,
+  );
 }
 
 // Update the repository summary after all packages are fetched
@@ -118,5 +123,7 @@ console.log(`Mirrored ${mirroredComponents.length} applications`);
 console.log(
   `\nYou can now serve this repository via HTTP and add it to Flatpak clients.`,
 );
-console.log(`\nTo test search locally, run:`);
+console.log(`\nTo test:`);
+console.log(`  flatpak update --appstream <remote-name>`);
 console.log(`  flatpak remote-ls --app <remote-name>`);
+console.log(`  flatpak search <app-name>`);
