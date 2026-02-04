@@ -145,9 +145,12 @@ export async function createSummary() {
 
   console.log("Updating repository metadata...");
 
-  // Use flatpak build-update-repo which handles everything properly
-  // Including committing appstream data to OSTree refs
-  const buildUpdateCommand = `flatpak build-update-repo ${repoPath}`;
+  // First, manually commit appstream to both refs to ensure they exist
+  // This guarantees both appstream/x86_64 and appstream2/x86_64 are present
+  await commitAppstreamRefs();
+
+  // Then use flatpak build-update-repo to update summary and metadata
+  const buildUpdateCommand = `flatpak build-update-repo --no-update-appstream ${repoPath}`;
 
   try {
     const { stdout, stderr } = await execAsync(buildUpdateCommand);
@@ -172,50 +175,54 @@ export async function createSummary() {
     }
 
     console.log(`✓ Updated Flatpak repository successfully`);
-    console.log(`  - OSTree summary updated`);
-    console.log(
-      `  - Appstream refs committed (appstream/x86_64, appstream2/x86_64)`,
-    );
-    console.log(`  - Repository metadata updated`);
   } catch (error) {
-    console.error(`✗ flatpak build-update-repo failed: ${error.message}`);
-    console.log(`\nTrying manual approach...`);
-    await manualUpdate();
+    console.warn(`⚠ flatpak build-update-repo failed: ${error.message}`);
+    console.log(`Using OSTree summary fallback...`);
+    await updateOstreeSummary();
   }
+
+  // Verify both refs exist
+  await verifyAppstreamRefs();
 }
 
-async function manualUpdate() {
+async function commitAppstreamRefs() {
   const repoPath = config.repo_name;
-
-  // Step 1: Commit appstream data manually
-  console.log("Step 1: Committing appstream data to OSTree...");
   const activeDir = path.join(repoPath, "appstream", "x86_64", "active");
+
+  console.log("Committing appstream data to OSTree refs...");
 
   try {
     // Check if active directory has content
     const files = await fs.readdir(activeDir);
     if (files.length === 0) {
       console.warn("  ⚠ No appstream files to commit");
-    } else {
-      // Commit to both refs that Flatpak might look for
-      const refs = ["appstream/x86_64", "appstream2/x86_64"];
+      return;
+    }
 
-      for (const ref of refs) {
-        const commitCmd = `ostree commit --repo=${repoPath} --branch=${ref} --subject="Update appstream" ${activeDir}`;
-        try {
-          await execAsync(commitCmd);
-          console.log(`  ✓ Appstream committed to ref: ${ref}`);
-        } catch (error) {
-          console.warn(`  ⚠ Could not commit to ${ref}: ${error.message}`);
-        }
+    // Commit to both refs that Flatpak might look for
+    // appstream/x86_64 is the standard ref
+    // appstream2/x86_64 is used by newer Flatpak versions
+    const refs = ["appstream/x86_64", "appstream2/x86_64"];
+
+    for (const ref of refs) {
+      const commitCmd = `ostree commit --repo=${repoPath} --branch=${ref} --subject="Update appstream" ${activeDir}`;
+      try {
+        const { stdout } = await execAsync(commitCmd);
+        const commitHash = stdout.trim();
+        console.log(`  ✓ ${ref} → ${commitHash.substring(0, 8)}`);
+      } catch (error) {
+        console.warn(`  ✗ Could not commit to ${ref}: ${error.message}`);
       }
     }
   } catch (error) {
     console.warn(`  ⚠ Could not commit appstream: ${error.message}`);
   }
+}
 
-  // Step 2: Update OSTree summary
-  console.log("Step 2: Updating OSTree summary...");
+async function updateOstreeSummary() {
+  const repoPath = config.repo_name;
+
+  console.log("Updating OSTree summary...");
   try {
     await execAsync(`ostree summary -u --repo=${repoPath}`);
     console.log("  ✓ OSTree summary updated");
@@ -223,15 +230,14 @@ async function manualUpdate() {
     throw new Error(`Failed to update summary: ${error.message}`);
   }
 
-  // Step 3: Add Flatpak metadata
-  console.log("Step 3: Adding Flatpak metadata...");
+  // Add Flatpak metadata
   await addFlatpakMetadata();
-
-  console.log("✓ Manual update complete");
 }
 
 async function addFlatpakMetadata() {
   const repoPath = config.repo_name;
+
+  console.log("Adding Flatpak metadata to summary...");
 
   const metadata = [
     { key: "xa.title", value: config.repo_name },
@@ -251,5 +257,35 @@ async function addFlatpakMetadata() {
     } catch (error) {
       console.warn(`  ⚠ Could not add ${key}: ${error.message}`);
     }
+  }
+}
+
+async function verifyAppstreamRefs() {
+  const repoPath = config.repo_name;
+
+  console.log("\nVerifying appstream refs...");
+
+  try {
+    const { stdout } = await execAsync(`ostree refs --repo=${repoPath}`);
+    const refs = stdout.trim().split("\n").filter(Boolean);
+
+    const appstreamRefs = refs.filter((r) => r.includes("appstream"));
+
+    if (appstreamRefs.length >= 2) {
+      console.log(`✓ Found ${appstreamRefs.length} appstream refs:`);
+      appstreamRefs.forEach((ref) => console.log(`  - ${ref}`));
+    } else {
+      console.warn(`⚠ Only found ${appstreamRefs.length} appstream ref(s):`);
+      appstreamRefs.forEach((ref) => console.log(`  - ${ref}`));
+
+      if (!appstreamRefs.includes("appstream/x86_64")) {
+        console.warn(`  Missing: appstream/x86_64`);
+      }
+      if (!appstreamRefs.includes("appstream2/x86_64")) {
+        console.warn(`  Missing: appstream2/x86_64`);
+      }
+    }
+  } catch (error) {
+    console.warn(`⚠ Could not verify refs: ${error.message}`);
   }
 }
