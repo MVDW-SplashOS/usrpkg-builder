@@ -6,6 +6,8 @@ import {
 } from "./ostree/ostreeManager.js";
 import fetchAppstream from "./mirror/fetchAppstream.js";
 import { fetchPackage } from "./mirror/fetchPackage.js";
+import fs from "fs/promises";
+import path from "path";
 
 import dotenv from "dotenv";
 
@@ -117,13 +119,48 @@ if (mirroredComponents.length > 0) {
 console.log("\nUpdating repository metadata...");
 await createSummary();
 
+// Generate .flatpakrepo file for easy client setup
+console.log("\nGenerating .flatpakrepo file...");
+await generateFlatpakrepoFile();
+
 console.log("\n✓ Repository update complete!");
 console.log(`Repository location: ${config.repo_name}`);
 console.log(`Mirrored ${mirroredComponents.length} applications`);
 console.log(
   `\nYou can now serve this repository via HTTP and add it to Flatpak clients.`,
 );
-console.log(`\nTo test:`);
-console.log(`  flatpak update --appstream <remote-name>`);
-console.log(`  flatpak remote-ls --app <remote-name>`);
-console.log(`  flatpak search <app-name>`);
+console.log(`\nClients can add the repository using:`);
+console.log(
+  `  flatpak remote-add --user ${config.repo_name} http://192.168.3.140/usrpkg-builder/usrpkg-repo/${config.repo_name}.flatpakrepo`,
+);
+console.log(`\nOr directly:`);
+console.log(
+  `  flatpak remote-add --user --no-gpg-verify ${config.repo_name} http://192.168.3.140/usrpkg-builder/usrpkg-repo/`,
+);
+console.log(`\nThen update appstream:`);
+console.log(`  flatpak update --appstream ${config.repo_name}`);
+
+async function generateFlatpakrepoFile() {
+  const repoPath = config.repo_name;
+  const repoUrl = "http://192.168.3.140/usrpkg-builder/usrpkg-repo/";
+  const repoTitle =
+    config.repo_title || config.repo_name || "UsrPkg Repository";
+
+  const flatpakrepoContent = `[Flatpak Repo]
+Title=${repoTitle}
+Url=${repoUrl}
+Homepage=${repoUrl}
+Comment=Local Flatpak mirror
+Description=Mirrored Flatpak packages for local network use
+GPGVerify=false
+`;
+
+  const outputPath = path.join(repoPath, `${config.repo_name}.flatpakrepo`);
+
+  try {
+    await fs.writeFile(outputPath, flatpakrepoContent);
+    console.log(`✓ Created ${config.repo_name}.flatpakrepo`);
+  } catch (error) {
+    console.warn(`⚠ Could not create .flatpakrepo file: ${error.message}`);
+  }
+}
